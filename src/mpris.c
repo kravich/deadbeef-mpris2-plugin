@@ -24,11 +24,7 @@ static int onStart() {
 static int onStop() {
 	stopServer();
 
-#if (GLIB_MAJOR_VERSION <= 2 && GLIB_MINOR_VERSION < 32)
 	g_thread_join(mprisThread);
-#else
-	g_thread_unref(mprisThread);
-#endif
 
 	return 0;
 }
