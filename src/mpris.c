@@ -50,6 +50,7 @@ static void onPlaybackStarted(void) {
 		debug("performed transition to PLAYING state");
 		playbackState = OUTPUT_STATE_PLAYING;
 		emitPlaybackStatusChanged(playbackState, &mprisData);
+		emitCanGoChanged(&mprisData);
 	} else {
 		debug("ignored playbackStarted event in unexpected state");
 	}
@@ -61,6 +62,7 @@ static void onPlaybackStopped(void) {
 		debug("performed transition to STOPPED state");
 		playbackState = OUTPUT_STATE_STOPPED;
 		emitPlaybackStatusChanged(playbackState, &mprisData);
+		emitCanGoChanged(&mprisData);
 	} else {
 		debug("ignored playbackStopped event in unexpected state");
 	}
