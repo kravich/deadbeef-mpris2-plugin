@@ -1,4 +1,5 @@
 #include <glib.h>
+#include <stdbool.h>
 
 #include "mprisServer.h"
 #include "logging.h"
@@ -8,6 +9,8 @@ static struct MprisData mprisData;
 
 static int oldLoopStatus = -1;
 static int oldShuffleStatus = -1;
+
+static int playbackState = OUTPUT_STATE_STOPPED;
 
 static int onStart() {
 	oldLoopStatus = mprisData.deadbeef->conf_get_int("playback.loop", 0);
@@ -42,6 +45,77 @@ static int onConnect() {
 	return 0;
 }
 
+static void onPlaybackStarted(void) {
+	if (playbackState == OUTPUT_STATE_STOPPED) {
+		debug("performed transition to PLAYING state");
+		playbackState = OUTPUT_STATE_PLAYING;
+		emitPlaybackStatusChanged(playbackState, &mprisData);
+	} else {
+		debug("ignored playbackStarted event in unexpected state");
+	}
+}
+
+static void onPlaybackStopped(void) {
+	if (playbackState == OUTPUT_STATE_PLAYING ||
+		playbackState == OUTPUT_STATE_PAUSED) {
+		debug("performed transition to STOPPED state");
+		playbackState = OUTPUT_STATE_STOPPED;
+		emitPlaybackStatusChanged(playbackState, &mprisData);
+	} else {
+		debug("ignored playbackStopped event in unexpected state");
+	}
+}
+
+static void onTrackChanged(void) {
+	if (playbackState == OUTPUT_STATE_PAUSED) {
+		debug("performed transition to PLAYING state");
+		playbackState = OUTPUT_STATE_PLAYING;
+		emitPlaybackStatusChanged(playbackState, &mprisData);
+	} else if (playbackState == OUTPUT_STATE_PLAYING) {
+		// Track change event in PLAYING state is totally expected, do not print next warning
+	} else {
+		debug("ignored playbackStopped event in unexpected state");
+	}
+}
+
+static void onPlaybackPaused(void) {
+	if (playbackState == OUTPUT_STATE_PLAYING) {
+		debug("performed transition to PAUSED state");
+		playbackState = OUTPUT_STATE_PAUSED;
+		emitPlaybackStatusChanged(playbackState, &mprisData);
+	} else {
+		debug("ignored playbackPaused event in unexpected state");
+	}
+}
+
+static void onPlaybackResumed(void) {
+	if (playbackState == OUTPUT_STATE_PAUSED) {
+		debug("Perfromed transition to PLAYING state");
+		playbackState = OUTPUT_STATE_PLAYING;
+		emitPlaybackStatusChanged(playbackState, &mprisData);
+	} else {
+		debug("ignored playbackResumed event in unexpected state");
+	}
+}
+
+static void handleSongchangedEvent(ddb_event_trackchange_t *ev) {
+	if (ev->from == NULL && ev->to != NULL) {
+		onPlaybackStarted();
+	} else if(ev->from != NULL && ev->to == NULL) {
+		onPlaybackStopped();
+	} else {
+		onTrackChanged();
+	}
+}
+
+static void handlePausedEvent(bool isPaused) {
+	if (isPaused) {
+		onPlaybackPaused();
+	} else {
+		onPlaybackResumed();
+	}
+}
+
 //***********************
 //* Handels signals for *
 //* - Playback status   *
@@ -72,15 +146,14 @@ static int handleEvent (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
 		case DB_EV_SONGSTARTED:
 			debug("DB_EV_SONGSTARTED event received");
 			emitMetadataChanged(-1, &mprisData);
-			emitPlaybackStatusChanged(OUTPUT_STATE_PLAYING, &mprisData);
 			break;
 		case DB_EV_PAUSED:
 			debug("DB_EV_PAUSED event received");
-			emitPlaybackStatusChanged(p1 ? OUTPUT_STATE_PAUSED : OUTPUT_STATE_PLAYING, &mprisData);
+			handlePausedEvent((bool)p1);
 			break;
-		case DB_EV_STOP:
-			debug("DB_EV_STOP event received");
-			emitPlaybackStatusChanged(OUTPUT_STATE_STOPPED, &mprisData);
+		case DB_EV_SONGCHANGED:
+			debug("DB_EV_SONGCHANGED event received");
+			handleSongchangedEvent((ddb_event_trackchange_t*)ctx);
 			break;
 		case DB_EV_VOLUMECHANGED:
 			debug("DB_EV_VOLUMECHANGED event received");
