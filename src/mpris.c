@@ -143,6 +143,7 @@ static int handleEvent (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
 			break;
 		case DB_EV_SELCHANGED:
 		case DB_EV_PLAYLISTSWITCHED:
+		case DB_EV_PLAYLISTCHANGED:
 			emitCanGoChanged(&mprisData);
 			break;
 		case DB_EV_SONGSTARTED:
