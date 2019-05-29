@@ -797,10 +797,7 @@ void emitShuffleStatusChanged(int status) {
 static void onBusAcquiredHandler(GDBusConnection *connection, const char *name, void *userData) {
 	globalConnection = connection;
 	debug("Bus accquired");
-}
 
-static void onNameAcquiredHandler(GDBusConnection *connection, const char *name, void *userData) {
-	debug("name accquired: %s", name);
 	GDBusInterfaceInfo **interfaces = ((struct MprisData*)userData)->gdbusNodeInfo->interfaces;
 
 	debug("Registering" OBJECT_NAME "object...");
@@ -811,8 +808,13 @@ static void onNameAcquiredHandler(GDBusConnection *connection, const char *name,
                                       NULL);
 }
 
+static void onNameAcquiredHandler(GDBusConnection *connection, const char *name, void *userData) {
+	debug("name accquired: %s", name);
+}
+
 static void onConnotConnectToBus(GDBusConnection *connection, const char *name, void *user_data){
 	error("cannot connect to bus");
+	// FIXME: Unregister objects
 }
 
 void* startServer(void *data) {
