@@ -85,6 +85,8 @@ static const char xmlForNode[] =
 static GDBusConnection *globalConnection = NULL;
 static GMainLoop *loop;
 
+static GVariant *cachedMetadata = NULL;
+
 static gboolean bytecodeCompiled;
 
 static GVariant* produceScalarString(const char *valueStr) {
@@ -686,16 +688,30 @@ void emitMetadataChanged(int trackId, struct MprisData *userData) {
 
 	g_variant_builder_add(builder, "{sv}", "Metadata", getMetadataForTrack(trackId, userData));
 
+	GVariant *metadata = g_variant_builder_end(builder);
+	g_variant_builder_unref(builder);
+
+	if (cachedMetadata && g_variant_equal(metadata, cachedMetadata)) {
+		// Nothing to send, metadata did not change actually
+		g_variant_unref(metadata);
+		return;
+	}
+
+	if (cachedMetadata) {
+		g_variant_unref(cachedMetadata);
+	}
+
+	cachedMetadata = metadata;
+	g_variant_ref_sink(cachedMetadata);
+
 	GVariant *signal[] = {
 			g_variant_new_string(PLAYER_INTERFACE),
-			g_variant_builder_end(builder),
+			metadata,
 			g_variant_new_strv(NULL, 0)
 	};
 
 	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
                                   g_variant_new_tuple(signal, 3), NULL);
-
-	g_variant_builder_unref(builder);
 }
 
 void emitCanGoChanged(struct MprisData *userData) {
@@ -833,6 +849,11 @@ void* startServer(void *data) {
 
 	loop = g_main_loop_new(context, FALSE);
 	g_main_loop_run(loop);
+
+	if (cachedMetadata) {
+		g_variant_unref(cachedMetadata);
+		cachedMetadata = NULL;
+	}
 
 	g_bus_unown_name(ownerId);
 	g_dbus_node_info_unref(mprisData->gdbusNodeInfo);
