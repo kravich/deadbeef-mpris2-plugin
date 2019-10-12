@@ -82,7 +82,7 @@ static const char xmlForNode[] =
 	"	</interface>"
 	"</node>";
 
-static GDBusConnection *globalConnection = NULL;
+static GDBusConnection *globalSessionConnection;
 static GMainLoop *loop;
 
 static GVariant *cachedMetadata = NULL;
@@ -669,7 +669,7 @@ void emitVolumeChanged(float volume) {
 		g_variant_new_strv(NULL, 0)
 	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
                                   g_variant_new_tuple(signal, 3), NULL);
 
 	g_variant_builder_unref(builder);
@@ -679,7 +679,7 @@ void emitSeeked(float position) {
 	int64_t positionInMicroseconds = position * 1000000.0;
 	debug("Seeked to %" PRId64, positionInMicroseconds);
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PLAYER_INTERFACE, "Seeked",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PLAYER_INTERFACE, "Seeked",
                                   g_variant_new("(x)", positionInMicroseconds), NULL);
 }
 
@@ -710,7 +710,7 @@ void emitMetadataChanged(int trackId, struct MprisData *userData) {
 			g_variant_new_strv(NULL, 0)
 	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
                                   g_variant_new_tuple(signal, 3), NULL);
 }
 
@@ -727,7 +727,7 @@ void emitCanGoChanged(struct MprisData *userData) {
 			g_variant_new_strv(NULL, 0)
 	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
                                   g_variant_new_tuple(signal, 3), NULL);
 
 	g_variant_builder_unref(builder);
@@ -759,7 +759,7 @@ void emitPlaybackStatusChanged(int status, struct MprisData *userData) {
 		g_variant_new_strv(NULL, 0)
 	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
                                   g_variant_new_tuple(signal, 3), NULL);
 
 	g_variant_builder_unref(builder);
@@ -788,7 +788,7 @@ void emitLoopStatusChanged(int status) {
 		g_variant_new_strv(NULL, 0)
 	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
                                   g_variant_new_tuple(signal, 3), NULL);
 
 	g_variant_builder_unref(builder);
@@ -804,15 +804,15 @@ void emitShuffleStatusChanged(int status) {
 		g_variant_new_strv(NULL, 0)
 	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
                                   g_variant_new_tuple(signal, 3), NULL);
 
 	g_variant_builder_unref(builder);
 }
 
-static void onBusAcquiredHandler(GDBusConnection *connection, const char *name, void *userData) {
-	globalConnection = connection;
-	debug("Bus accquired");
+static void onSessionBusAcquired(GDBusConnection *connection, const char *name, void *userData) {
+	globalSessionConnection = connection;
+	debug("session bus accquired");
 
 	GDBusInterfaceInfo **interfaces = ((struct MprisData*)userData)->gdbusNodeInfo->interfaces;
 
@@ -824,17 +824,17 @@ static void onBusAcquiredHandler(GDBusConnection *connection, const char *name, 
                                       NULL);
 }
 
-static void onNameAcquiredHandler(GDBusConnection *connection, const char *name, void *userData) {
-	debug("name accquired: %s", name);
+static void onSessionNameAcquired(GDBusConnection *connection, const char *name, void *userData) {
+	debug("name %s on a session bus accquired", name);
 }
 
-static void onConnotConnectToBus(GDBusConnection *connection, const char *name, void *user_data){
-	error("cannot connect to bus");
+static void onSessionNameLost(GDBusConnection *connection, const char *name, void *user_data){
+	error("name %s on a session bus lost", name);
 	// FIXME: Unregister objects
 }
 
 void* startServer(void *data) {
-	int ownerId;
+	int sessionBus;
 	GMainContext *context = g_main_context_new();
 	struct MprisData *mprisData = data;
 
@@ -843,8 +843,8 @@ void* startServer(void *data) {
 
 	mprisData->gdbusNodeInfo = g_dbus_node_info_new_for_xml(xmlForNode, NULL);
 
-	ownerId = g_bus_own_name(G_BUS_TYPE_SESSION, BUS_NAME, G_BUS_NAME_OWNER_FLAGS_REPLACE,
-                             onBusAcquiredHandler, onNameAcquiredHandler, onConnotConnectToBus,
+	sessionBus = g_bus_own_name(G_BUS_TYPE_SESSION, BUS_NAME, G_BUS_NAME_OWNER_FLAGS_REPLACE,
+                             onSessionBusAcquired, onSessionNameAcquired, onSessionNameLost,
                              (void *)mprisData, NULL);
 
 	loop = g_main_loop_new(context, FALSE);
@@ -855,7 +855,7 @@ void* startServer(void *data) {
 		cachedMetadata = NULL;
 	}
 
-	g_bus_unown_name(ownerId);
+	g_bus_unown_name(sessionBus);
 	g_dbus_node_info_unref(mprisData->gdbusNodeInfo);
 	g_main_loop_unref(loop);
 
