@@ -810,18 +810,20 @@ void emitShuffleStatusChanged(int status) {
 	g_variant_builder_unref(builder);
 }
 
-static void onSessionBusAcquired(GDBusConnection *connection, const char *name, void *userData) {
-	globalSessionConnection = connection;
-	debug("session bus accquired");
-
+static void registerObject(GDBusConnection *connection, void *userData) {
 	GDBusInterfaceInfo **interfaces = ((struct MprisData*)userData)->gdbusNodeInfo->interfaces;
 
-	debug("Registering" OBJECT_NAME "object...");
 	g_dbus_connection_register_object(connection, OBJECT_NAME, interfaces[0], &rootInterfaceVTable, userData, NULL,
                                       NULL);
 
 	g_dbus_connection_register_object(connection, OBJECT_NAME, interfaces[1], &playerInterfaceVTable, userData, NULL,
                                       NULL);
+}
+
+static void onSessionBusAcquired(GDBusConnection *connection, const char *name, void *userData) {
+	globalSessionConnection = connection;
+	debug("session bus accquired, registering " OBJECT_NAME " object on it");
+	registerObject(connection, userData);
 }
 
 static void onSessionNameAcquired(GDBusConnection *connection, const char *name, void *userData) {
