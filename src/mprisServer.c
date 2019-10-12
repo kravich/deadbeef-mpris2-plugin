@@ -11,6 +11,7 @@
 
 #include "logging.h"
 #include "mprisServer.h"
+#include "media1Manager.h"
 
 #define BUS_NAME "org.mpris.MediaPlayer2.DeaDBeeF"
 #define OBJECT_NAME "/org/mpris/MediaPlayer2"
@@ -83,6 +84,8 @@ static const char xmlForNode[] =
 	"</node>";
 
 static GDBusConnection *globalSessionConnection;
+static GDBusConnection *globalSystemConnection;
+
 static GMainLoop *loop;
 
 static GVariant *cachedMetadata = NULL;
@@ -669,8 +672,17 @@ static void emitPropertiesChanged(GVariant *changesDict) {
 		g_variant_new_strv(NULL, 0)
 	};
 
+	GVariant *signalParams = g_variant_ref_sink(g_variant_new_tuple(signal, 3));
+
 	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
-                                  g_variant_new_tuple(signal, 3), NULL);
+                                  signalParams, NULL);
+
+	if (globalSystemConnection) {
+		g_dbus_connection_emit_signal(globalSystemConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+									  signalParams, NULL);
+	}
+
+	g_variant_unref(signalParams);
 }
 
 void emitVolumeChanged(float volume) {
@@ -691,6 +703,11 @@ void emitSeeked(float position) {
 
 	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PLAYER_INTERFACE, "Seeked",
                                   g_variant_new("(x)", positionInMicroseconds), NULL);
+
+	if (globalSystemConnection) {
+		g_dbus_connection_emit_signal(globalSystemConnection, NULL, OBJECT_NAME, PLAYER_INTERFACE, "Seeked",
+									  g_variant_new("(x)", positionInMicroseconds), NULL);
+	}
 }
 
 void emitMetadataChanged(int trackId, struct MprisData *userData) {
@@ -793,6 +810,11 @@ static void registerObject(GDBusConnection *connection, void *userData) {
                                       NULL);
 }
 
+static void registerObjectOnSystemBus(GDBusConnection *connection, void *userData) {
+	globalSystemConnection = connection;
+	registerObject(connection, userData);
+}
+
 static void onSessionBusAcquired(GDBusConnection *connection, const char *name, void *userData) {
 	globalSessionConnection = connection;
 	debug("session bus accquired, registering " OBJECT_NAME " object on it");
@@ -822,8 +844,13 @@ void* startServer(void *data) {
                              onSessionBusAcquired, onSessionNameAcquired, onSessionNameLost,
                              (void *)mprisData, NULL);
 
+	media1Start(registerObjectOnSystemBus, getPlayerProperty, mprisData);
+
 	loop = g_main_loop_new(context, FALSE);
 	g_main_loop_run(loop);
+
+	media1Shutdown();
+	globalSystemConnection = NULL;
 
 	if (cachedMetadata) {
 		g_variant_unref(cachedMetadata);
