@@ -517,11 +517,9 @@ static void onPlayerMethodCallHandler(GDBusConnection *connection, const char *s
 	}
 }
 
-static GVariant* onPlayerGetPropertyHandler(GDBusConnection *connection, const char *sender, const char *objectPath,
-                                            const char *interfaceName, const char *propertyName, GError **error,
-                                            void *userData) {
-	debug("Get property call on Player interface. sender: %s, propertyName: %s", sender, propertyName);
+static GVariant* getPlayerProperty(const char *propertyName, void *userData) {
 	DB_functions_t *deadbeef = ((struct MprisData *)userData)->deadbeef;
+
 	GVariant *result = NULL;
 
 	if (strcmp(propertyName, "PlaybackStatus") == 0) {
@@ -601,6 +599,13 @@ static GVariant* onPlayerGetPropertyHandler(GDBusConnection *connection, const c
 		result = g_variant_new_boolean(TRUE);
 	}
 	return result;
+}
+
+static GVariant* onPlayerGetPropertyHandler(GDBusConnection *connection, const char *sender, const char *objectPath,
+                                            const char *interfaceName, const char *propertyName, GError **error,
+                                            void *userData) {
+	debug("Get property call on Player interface. sender: %s, propertyName: %s", sender, propertyName);
+	return getPlayerProperty(propertyName, userData);
 }
 
 static int onPlayerSetPropertyHandler(GDBusConnection *connection, const char *sender, const char *objectPath,
