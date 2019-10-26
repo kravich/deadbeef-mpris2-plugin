@@ -11,6 +11,7 @@
 
 #include "logging.h"
 #include "mprisServer.h"
+#include "media1Manager.h"
 
 #define BUS_NAME "org.mpris.MediaPlayer2.DeaDBeeF"
 #define OBJECT_NAME "/org/mpris/MediaPlayer2"
@@ -82,7 +83,9 @@ static const char xmlForNode[] =
 	"	</interface>"
 	"</node>";
 
-static GDBusConnection *globalConnection = NULL;
+static GDBusConnection *globalSessionConnection;
+static GDBusConnection *globalSystemConnection;
+
 static GMainLoop *loop;
 
 static GVariant *cachedMetadata = NULL;
@@ -517,11 +520,9 @@ static void onPlayerMethodCallHandler(GDBusConnection *connection, const char *s
 	}
 }
 
-static GVariant* onPlayerGetPropertyHandler(GDBusConnection *connection, const char *sender, const char *objectPath,
-                                            const char *interfaceName, const char *propertyName, GError **error,
-                                            void *userData) {
-	debug("Get property call on Player interface. sender: %s, propertyName: %s", sender, propertyName);
+static GVariant* getPlayerProperty(const char *propertyName, void *userData) {
 	DB_functions_t *deadbeef = ((struct MprisData *)userData)->deadbeef;
+
 	GVariant *result = NULL;
 
 	if (strcmp(propertyName, "PlaybackStatus") == 0) {
@@ -603,6 +604,13 @@ static GVariant* onPlayerGetPropertyHandler(GDBusConnection *connection, const c
 	return result;
 }
 
+static GVariant* onPlayerGetPropertyHandler(GDBusConnection *connection, const char *sender, const char *objectPath,
+                                            const char *interfaceName, const char *propertyName, GError **error,
+                                            void *userData) {
+	debug("Get property call on Player interface. sender: %s, propertyName: %s", sender, propertyName);
+	return getPlayerProperty(propertyName, userData);
+}
+
 static int onPlayerSetPropertyHandler(GDBusConnection *connection, const char *sender, const char *objectPath,
                                       const char *interfaceName, const char *propertyName, GVariant *value,
                                       GError **error, gpointer userData) {
@@ -657,30 +665,49 @@ static const GDBusInterfaceVTable playerInterfaceVTable = {
 //***********
 //* SIGNALS *
 //***********
-void emitVolumeChanged(float volume) {
-	GVariantBuilder *builder = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
-	volume = (volume * 0.02) + 1;
-	debug("Volume property changed: %f", volume);
-
-	g_variant_builder_add(builder, "{sv}", "Volume", g_variant_new("d", volume));
+static void emitPropertiesChanged(GVariant *changesDict) {
 	GVariant *signal[] = {
 		g_variant_new_string(PLAYER_INTERFACE),
-		g_variant_builder_end(builder),
+		changesDict,
 		g_variant_new_strv(NULL, 0)
 	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
-                                  g_variant_new_tuple(signal, 3), NULL);
+	GVariant *signalParams = g_variant_ref_sink(g_variant_new_tuple(signal, 3));
 
-	g_variant_builder_unref(builder);
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+                                  signalParams, NULL);
+
+	if (globalSystemConnection) {
+		g_dbus_connection_emit_signal(globalSystemConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
+									  signalParams, NULL);
+	}
+
+	g_variant_unref(signalParams);
+}
+
+void emitVolumeChanged(float volume) {
+	volume = (volume * 0.02) + 1;
+	debug("Volume property changed: %f", volume);
+
+	GVariantBuilder builder;
+	g_variant_builder_init(&builder, G_VARIANT_TYPE_ARRAY);
+
+	g_variant_builder_add(&builder, "{sv}", "Volume", g_variant_new("d", volume));
+
+	emitPropertiesChanged(g_variant_builder_end(&builder));
 }
 
 void emitSeeked(float position) {
 	int64_t positionInMicroseconds = position * 1000000.0;
 	debug("Seeked to %" PRId64, positionInMicroseconds);
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PLAYER_INTERFACE, "Seeked",
+	g_dbus_connection_emit_signal(globalSessionConnection, NULL, OBJECT_NAME, PLAYER_INTERFACE, "Seeked",
                                   g_variant_new("(x)", positionInMicroseconds), NULL);
+
+	if (globalSystemConnection) {
+		g_dbus_connection_emit_signal(globalSystemConnection, NULL, OBJECT_NAME, PLAYER_INTERFACE, "Seeked",
+									  g_variant_new("(x)", positionInMicroseconds), NULL);
+	}
 }
 
 void emitMetadataChanged(int trackId, struct MprisData *userData) {
@@ -704,119 +731,78 @@ void emitMetadataChanged(int trackId, struct MprisData *userData) {
 	cachedMetadata = metadata;
 	g_variant_ref_sink(cachedMetadata);
 
-	GVariant *signal[] = {
-			g_variant_new_string(PLAYER_INTERFACE),
-			metadata,
-			g_variant_new_strv(NULL, 0)
-	};
-
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
-                                  g_variant_new_tuple(signal, 3), NULL);
+	emitPropertiesChanged(metadata);
 }
 
 void emitCanGoChanged(struct MprisData *userData) {
-	GVariantBuilder *builder = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+	GVariantBuilder builder;
+	g_variant_builder_init(&builder, G_VARIANT_TYPE_ARRAY);
 
-	g_variant_builder_add(builder, "{sv}", "CanPlay", g_variant_new_boolean(canPlayAndSwitchTrack(userData)));
-	g_variant_builder_add(builder, "{sv}", "CanGoNext", g_variant_new_boolean(canPlayAndSwitchTrack(userData)));
-	g_variant_builder_add(builder, "{sv}", "CanGoPrevious", g_variant_new_boolean(canPlayAndSwitchTrack(userData)));
+	g_variant_builder_add(&builder, "{sv}", "CanPlay", g_variant_new_boolean(canPlayAndSwitchTrack(userData)));
+	g_variant_builder_add(&builder, "{sv}", "CanGoNext", g_variant_new_boolean(canPlayAndSwitchTrack(userData)));
+	g_variant_builder_add(&builder, "{sv}", "CanGoPrevious", g_variant_new_boolean(canPlayAndSwitchTrack(userData)));
 
-	GVariant *signal[] = {
-			g_variant_new_string(PLAYER_INTERFACE),
-			g_variant_builder_end(builder),
-			g_variant_new_strv(NULL, 0)
-	};
-
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
-                                  g_variant_new_tuple(signal, 3), NULL);
-
-	g_variant_builder_unref(builder);
+	emitPropertiesChanged(g_variant_builder_end(&builder));
 }
 
 void emitPlaybackStatusChanged(int status, struct MprisData *userData) {
-	GVariantBuilder *builder = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
 	DB_functions_t *deadbeef = ((struct MprisData *)userData)->deadbeef;
+
+	GVariantBuilder builder;
+	g_variant_builder_init(&builder, G_VARIANT_TYPE_ARRAY);
 
 	switch (status) {
 		case OUTPUT_STATE_PLAYING:
-			g_variant_builder_add(builder, "{sv}", "PlaybackStatus", g_variant_new_string("Playing"));
+			g_variant_builder_add(&builder, "{sv}", "PlaybackStatus", g_variant_new_string("Playing"));
 			break;
 		case OUTPUT_STATE_PAUSED:
-			g_variant_builder_add(builder, "{sv}", "PlaybackStatus", g_variant_new_string("Paused"));
+			g_variant_builder_add(&builder, "{sv}", "PlaybackStatus", g_variant_new_string("Paused"));
 			break;
 		case OUTPUT_STATE_STOPPED:
 		default:
-			g_variant_builder_add(builder, "{sv}", "PlaybackStatus", g_variant_new_string("Stopped"));
+			g_variant_builder_add(&builder, "{sv}", "PlaybackStatus", g_variant_new_string("Stopped"));
 			break;
 	}
 
-	g_variant_builder_add(builder, "{sv}", "CanSeek", g_variant_new_boolean(deadbeef_can_seek(deadbeef)));
+	g_variant_builder_add(&builder, "{sv}", "CanSeek", g_variant_new_boolean(deadbeef_can_seek(deadbeef)));
 
-
-	GVariant *signal[] = {
-		g_variant_new_string(PLAYER_INTERFACE),
-		g_variant_builder_end(builder),
-		g_variant_new_strv(NULL, 0)
-	};
-
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
-                                  g_variant_new_tuple(signal, 3), NULL);
-
-	g_variant_builder_unref(builder);
+	emitPropertiesChanged(g_variant_builder_end(&builder));
 }
 
 void emitLoopStatusChanged(int status) {
-	GVariantBuilder *builder = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+	GVariantBuilder builder;
+	g_variant_builder_init(&builder, G_VARIANT_TYPE_ARRAY);
 
 	switch (status) {
 	case PLAYBACK_MODE_NOLOOP:
-		g_variant_builder_add(builder, "{sv}", "LoopStatus", g_variant_new_string("None"));
+		g_variant_builder_add(&builder, "{sv}", "LoopStatus", g_variant_new_string("None"));
 		break;
 	case PLAYBACK_MODE_LOOP_ALL:
-		g_variant_builder_add(builder, "{sv}", "LoopStatus", g_variant_new_string("Playlist"));
+		g_variant_builder_add(&builder, "{sv}", "LoopStatus", g_variant_new_string("Playlist"));
 		break;
 	case PLAYBACK_MODE_LOOP_SINGLE:
-		g_variant_builder_add(builder, "{sv}", "LoopStatus", g_variant_new_string("Track"));
+		g_variant_builder_add(&builder, "{sv}", "LoopStatus", g_variant_new_string("Track"));
 		break;
 	default:
-		g_variant_builder_add(builder, "{sv}", "LoopStatus", g_variant_new_string("None"));
+		g_variant_builder_add(&builder, "{sv}", "LoopStatus", g_variant_new_string("None"));
 		break;
 	}
-	GVariant *signal[] = {
-		g_variant_new_string(PLAYER_INTERFACE),
-		g_variant_builder_end(builder),
-		g_variant_new_strv(NULL, 0)
-	};
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
-                                  g_variant_new_tuple(signal, 3), NULL);
-
-	g_variant_builder_unref(builder);
+	emitPropertiesChanged(g_variant_builder_end(&builder));
 }
 
 void emitShuffleStatusChanged(int status) {
-	GVariantBuilder *builder = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+	GVariantBuilder builder;
+	g_variant_builder_init(&builder, G_VARIANT_TYPE_ARRAY);
 
-	g_variant_builder_add(builder, "{sv}", "Shuffle", g_variant_new_boolean(status != PLAYBACK_ORDER_LINEAR));
-	GVariant *signal[] = {
-		g_variant_new_string(PLAYER_INTERFACE),
-		g_variant_builder_end(builder),
-		g_variant_new_strv(NULL, 0)
-	};
+	g_variant_builder_add(&builder, "{sv}", "Shuffle", g_variant_new_boolean(status != PLAYBACK_ORDER_LINEAR));
 
-	g_dbus_connection_emit_signal(globalConnection, NULL, OBJECT_NAME, PROPERTIES_INTERFACE, "PropertiesChanged",
-                                  g_variant_new_tuple(signal, 3), NULL);
-
-	g_variant_builder_unref(builder);
+	emitPropertiesChanged(g_variant_builder_end(&builder));
 }
 
-static void onBusAcquiredHandler(GDBusConnection *connection, const char *name, void *userData) {
-	globalConnection = connection;
-	debug("Bus accquired");
-
+static void registerObject(GDBusConnection *connection, void *userData) {
 	GDBusInterfaceInfo **interfaces = ((struct MprisData*)userData)->gdbusNodeInfo->interfaces;
 
-	debug("Registering" OBJECT_NAME "object...");
 	g_dbus_connection_register_object(connection, OBJECT_NAME, interfaces[0], &rootInterfaceVTable, userData, NULL,
                                       NULL);
 
@@ -824,17 +810,28 @@ static void onBusAcquiredHandler(GDBusConnection *connection, const char *name, 
                                       NULL);
 }
 
-static void onNameAcquiredHandler(GDBusConnection *connection, const char *name, void *userData) {
-	debug("name accquired: %s", name);
+static void registerObjectOnSystemBus(GDBusConnection *connection, void *userData) {
+	globalSystemConnection = connection;
+	registerObject(connection, userData);
 }
 
-static void onConnotConnectToBus(GDBusConnection *connection, const char *name, void *user_data){
-	error("cannot connect to bus");
+static void onSessionBusAcquired(GDBusConnection *connection, const char *name, void *userData) {
+	globalSessionConnection = connection;
+	debug("session bus accquired, registering " OBJECT_NAME " object on it");
+	registerObject(connection, userData);
+}
+
+static void onSessionNameAcquired(GDBusConnection *connection, const char *name, void *userData) {
+	debug("name %s on a session bus accquired", name);
+}
+
+static void onSessionNameLost(GDBusConnection *connection, const char *name, void *user_data){
+	error("name %s on a session bus lost", name);
 	// FIXME: Unregister objects
 }
 
 void* startServer(void *data) {
-	int ownerId;
+	int sessionBus;
 	GMainContext *context = g_main_context_new();
 	struct MprisData *mprisData = data;
 
@@ -843,19 +840,24 @@ void* startServer(void *data) {
 
 	mprisData->gdbusNodeInfo = g_dbus_node_info_new_for_xml(xmlForNode, NULL);
 
-	ownerId = g_bus_own_name(G_BUS_TYPE_SESSION, BUS_NAME, G_BUS_NAME_OWNER_FLAGS_REPLACE,
-                             onBusAcquiredHandler, onNameAcquiredHandler, onConnotConnectToBus,
+	sessionBus = g_bus_own_name(G_BUS_TYPE_SESSION, BUS_NAME, G_BUS_NAME_OWNER_FLAGS_REPLACE,
+                             onSessionBusAcquired, onSessionNameAcquired, onSessionNameLost,
                              (void *)mprisData, NULL);
+
+	media1Start(registerObjectOnSystemBus, getPlayerProperty, mprisData);
 
 	loop = g_main_loop_new(context, FALSE);
 	g_main_loop_run(loop);
+
+	media1Shutdown();
+	globalSystemConnection = NULL;
 
 	if (cachedMetadata) {
 		g_variant_unref(cachedMetadata);
 		cachedMetadata = NULL;
 	}
 
-	g_bus_unown_name(ownerId);
+	g_bus_unown_name(sessionBus);
 	g_dbus_node_info_unref(mprisData->gdbusNodeInfo);
 	g_main_loop_unref(loop);
 
